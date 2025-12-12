@@ -34,8 +34,8 @@ else
 fi
 
 install_packages_debian() {
-  sudo apt-get update
-  sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install -y \
     curl ca-certificates git build-essential python3 python3-venv python3-pip \
     redis-server unzip gnupg apt-transport-https \
     libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libxss1 libxcomposite1 \
@@ -43,15 +43,15 @@ install_packages_debian() {
 }
 
 install_packages_alpine() {
-  sudo apk update
-  sudo apk add --no-cache curl ca-certificates git build-base python3 py3-venv py3-pip redis \
+  apk update
+  apk add --no-cache curl ca-certificates git build-base python3 py3-venv py3-pip redis \
     libstdc++ libx11 libxrandr libxcomposite libxss libgbm alsa-lib atk \
     gtk+3 nss
 }
 
 install_packages_yum() {
-  sudo yum install -y epel-release
-  sudo yum install -y curl ca-certificates git gcc gcc-c++ make python3 python3-pip python3-venv redis
+  yum install -y epel-release
+  yum install -y curl ca-certificates git gcc gcc-c++ make python3 python3-pip python3-venv redis
 }
 
 case "$PKG" in
