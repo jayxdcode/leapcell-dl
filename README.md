@@ -116,7 +116,7 @@ pass = encrypted-password-here
 
 # 🧠 How the System Works
 
-1. **API call received** → `/api?id=12345`
+1. **API call received** → `/api/v1/fetch?id=12345`
 2. FastAPI checks **Redis cache**
 
    * If cached → return MEGA link
@@ -149,7 +149,7 @@ python3 server.py
 ### Example Request
 
 ```bash
-curl "http://localhost:8000/?id=12345"
+curl "http://localhost:8000/api/v1/fetch?id=12345"
 ```
 
 ### Example Response
