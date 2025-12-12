@@ -5,7 +5,9 @@ import time
 import pathlib
 import urllib.parse
 import shutil
-from typing import Optional
+import re
+import base64
+from typing import Optional, Tuple
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
@@ -17,6 +19,7 @@ app = FastAPI(title="LeapCell downloader + rclone->mega cache")
 
 # Config via env vars
 SERVICE_URL_TEMPLATE = os.getenv("SERVICE_URL_TEMPLATE", "https://leapcell.example/item/{id}")
+# keep DOWNLOADS_DIR for backwards-compat but not used for persistent writes
 DOWNLOADS_DIR = pathlib.Path(os.getenv("DOWNLOADS_DIR", "downloads"))
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 REDIS_TTL = int(os.getenv("REDIS_TTL", str(60 * 60 * 24)))  # store cached link 24h by default
@@ -26,72 +29,75 @@ RCLONE_REMOTE_FOLDER = os.getenv("RCLONE_REMOTE_FOLDER", "leapcell_cache")  # fo
 WAIT_MS = float(os.getenv("WAIT_MS", "2500"))  # 2.5s default wait after page load
 PLAYWRIGHT_DOWNLOAD_TIMEOUT = int(os.getenv("PLAYWRIGHT_DOWNLOAD_TIMEOUT_MS", "15000"))
 
-DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
+# Note: do NOT attempt to mkdir on read-only FS; we will not write persistent files.
+# DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)  <-- removed
 
 # Redis client (async)
 redis = aioredis.from_url(REDIS_URL, decode_responses=True)
 
-# Helper: build leapcell url
+# Helper: build service url
 def make_target_url(id: str) -> str:
     return SERVICE_URL_TEMPLATE.format(id=id)
 
-# Helper: shell out to rclone: copy local file to remote and then produce a public link
-async def rclone_upload_and_link(local_path: str, remote_folder: str, filename: str) -> str:
+# Helper: stream bytes to rclone using `rclone rcat` and then get a public link
+async def rclone_rstream_upload_bytes(data_bytes: bytes, remote_folder: str, filename: str) -> str:
     """
-    Uses rclone to copy the file and to produce a public link.
-    Expects rclone remote configured (RCLONE_REMOTE).
+    Streams data_bytes to 'rclone rcat <remote>:<folder>/<filename>' and then returns rclone link.
     """
-    remote_target = f"{RCLONE_REMOTE}:{remote_folder}/{filename}"
+    remote_target = f"{RCLONE_REMOTE}:{remote_folder.rstrip('/')}/{filename}"
 
-    # copy the file (copyto to preserve filename)
-    copy_cmd = ["rclone", "copyto", local_path, remote_target]
-    proc = await asyncio.create_subprocess_exec(*copy_cmd,
-                                                stdout=asyncio.subprocess.PIPE,
-                                                stderr=asyncio.subprocess.PIPE)
-    out, err = await proc.communicate()
+    # rclone rcat <remote>:path  <-- reads file data from stdin
+    proc = await asyncio.create_subprocess_exec(
+        "rclone", "rcat", remote_target,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+
+    out, err = await proc.communicate(input=data_bytes)
     if proc.returncode != 0:
-        raise RuntimeError(f"rclone copyto failed: {err.decode().strip()}")
+        raise RuntimeError(f"rclone rcat failed: {err.decode().strip() or 'no stderr'}")
 
-    # create/get shareable link
-    link_cmd = ["rclone", "link", remote_target]
-    proc2 = await asyncio.create_subprocess_exec(*link_cmd,
-                                                 stdout=asyncio.subprocess.PIPE,
-                                                 stderr=asyncio.subprocess.PIPE)
+    # now obtain a shareable link
+    proc2 = await asyncio.create_subprocess_exec(
+        "rclone", "link", remote_target,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
     out2, err2 = await proc2.communicate()
     if proc2.returncode != 0:
-        raise RuntimeError(f"rclone link failed: {err2.decode().strip()}")
+        raise RuntimeError(f"rclone link failed: {err2.decode().strip() or 'no stderr'}")
 
     link = out2.decode().strip()
     return link
 
-# Helper: try to download by clicking the Download button
-async def playwright_download(target_url: str, id: str) -> pathlib.Path:
+# Helper: try to download by clicking the Download button and capture bytes
+async def playwright_download_stream(target_url: str, id: str) -> Tuple[str, bytes]:
     """
-    Launch Playwright, go to the target_url, wait 2.5s, find button with text "Download",
-    click it and wait for the download event. Returns local saved path.
+    Launch Playwright, go to the target_url, wait WAIT_MS, find button with text "Download",
+    click it and wait for the response that looks like a downloadable resource.
+    Returns (suggested_filename, bytes).
     """
     timestamp = int(time.time())
     async with async_playwright() as p:
         browser_kwargs = {"headless": True}
         if BROWSER_EXECUTABLE_PATH:
             browser_kwargs["executable_path"] = BROWSER_EXECUTABLE_PATH
-        # common args for headless environments
         browser = await p.chromium.launch(**browser_kwargs, args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-setuid-sandbox"])
-        context = await browser.new_context(accept_downloads=True)
+        context = await browser.new_context()
         page = await context.new_page()
 
         try:
-            # go to page
+            # navigate
             await page.goto(target_url, wait_until="load", timeout=30000)
         except Exception as e:
-            # continue, maybe page still usable
             await browser.close()
             raise RuntimeError(f"page.goto failed: {e}")
 
-        # wait for content to settle
+        # allow page to run JS and render
         await asyncio.sleep(WAIT_MS / 1000)
 
-        # Try common strategies for locating the download control
+        # locate the Download control
         locator_candidates = [
             page.locator("button", has_text="Download"),
             page.locator("a", has_text="Download"),
@@ -114,59 +120,93 @@ async def playwright_download(target_url: str, id: str) -> pathlib.Path:
             await browser.close()
             raise HTTPException(status_code=404, detail="Download control with text 'Download' not found on page")
 
-        # Prefer the Playwright download API: expect_download then click.
-        local_file_path = None
+        # Wait for a response that looks like a file (attachment or non-HTML content-type)
+        def is_download_response(resp):
+            try:
+                headers = {k.lower(): v for k, v in resp.headers.items()}
+            except Exception:
+                headers = {}
+            cdisp = headers.get("content-disposition", "")
+            ctype = headers.get("content-type", "").split(";")[0].strip().lower()
+            # treat anything that has 'attachment' in content-disposition as a download
+            if "attachment" in cdisp.lower():
+                return True
+            # if content-type is not HTML or JS/CSS, treat as a potential asset (image/zip/mp3/octet-stream)
+            if ctype and ctype not in ("text/html", "application/xhtml+xml", "application/javascript", "text/css"):
+                return True
+            return False
+
+        # start waiting for a matching response while clicking
         try:
-            # this waits for download to start and returns a Download object
-            async with page.expect_download(timeout=PLAYWRIGHT_DOWNLOAD_TIMEOUT) as download_info:
-                await found_locator.click()
-            download = await download_info.value
-            suggested = download.suggested_filename or f"download-{id}-{timestamp}"
-            local_target = DOWNLOADS_DIR / f"{id}-{timestamp}-{suggested}"
-            # ensure directory exists
-            local_target_parent = local_target.parent
-            local_target_parent.mkdir(parents=True, exist_ok=True)
-            await download.save_as(str(local_target))
-            local_file_path = local_target
+            wait_promise = page.wait_for_response(is_download_response, timeout=PLAYWRIGHT_DOWNLOAD_TIMEOUT)
+            # trigger the click
+            await found_locator.click()
+            response = await wait_promise
         except PlaywrightTimeoutError:
-            # fallback: maybe the button is actually a link (href). Try to get href and download via page context fetch.
+            # fallback: maybe the button is a link; try to fetch via href in page context
             href = await found_locator.get_attribute("href")
             if href:
                 resolved = urllib.parse.urljoin(page.url, href)
-                # perform a direct request in the page context to preserve cookies
                 try:
-                    resp_text = await page.evaluate("""async (u) => {
-                        const r = await fetch(u, {method: 'GET', credentials: 'same-origin'});
+                    # fetch inside page to preserve cookies and auth
+                    fetched = await page.evaluate("""async (u) => {
+                        const r = await fetch(u, { method: 'GET', credentials: 'same-origin' });
+                        const ok = r.ok;
+                        const status = r.status;
+                        const disposition = r.headers.get('content-disposition') || '';
+                        const filenameMatch = (disposition.match(/filename="?([^\";]+)"?/) || [])[1] || null;
                         const blob = await r.blob();
                         const arr = new Uint8Array(await blob.arrayBuffer());
-                        // return as base64 string
+                        // convert to base64
                         let binary = '';
                         for (let i = 0; i < arr.length; i++) binary += String.fromCharCode(arr[i]);
-                        return { ok: r.ok, status: r.status, filename: (r.headers.get('content-disposition') || '').match(/filename="?(.*)"?/)?.[1] || null, base64: btoa(binary) };
+                        const b64 = btoa(binary);
+                        return { ok, status, filename: filenameMatch, base64: b64, contentType: r.headers.get('content-type') || '' };
                     }""", resolved)
                 except Exception as e:
                     await browser.close()
                     raise RuntimeError(f"fallback page fetch failed: {e}")
 
-                if not resp_text.get("ok"):
+                if not fetched.get("ok"):
                     await browser.close()
-                    raise RuntimeError(f"fallback fetch failed status {resp_text.get('status')}")
-
-                filename = resp_text.get("filename") or f"{id}-{timestamp}"
-                b64 = resp_text.get("base64")
-                local_target = DOWNLOADS_DIR / filename
-                async with aiofiles.open(local_target, "wb") as f:
-                    await f.write(b64.encode("ascii"))  # base64 bytes
-                local_file_path = local_target
+                    raise RuntimeError(f"fallback fetch failed status {fetched.get('status')}")
+                filename = fetched.get("filename") or f"{id}-{timestamp}"
+                b64 = fetched.get("base64")
+                data_bytes = base64.b64decode(b64)
+                await browser.close()
+                return filename, data_bytes
             else:
                 await browser.close()
                 raise RuntimeError("Click did not trigger a downloadable response and no href found to fetch")
 
+        # If we have a response, get body bytes
+        try:
+            body = await response.body()
+        except Exception as e:
+            await browser.close()
+            raise RuntimeError(f"failed to read response body: {e}")
+
+        # attempt to get filename from content-disposition header
+        headers = {k.lower(): v for k, v in response.headers.items()}
+        cdisp = headers.get("content-disposition", "")
+        filename = None
+        if cdisp:
+            m = re.search(r'filename\*?=(?:UTF-8\'\')?"?([^\";]+)"?', cdisp)
+            if m:
+                filename = urllib.parse.unquote(m.group(1))
+
+        # fallback to derive filename
+        if not filename:
+            # try to get from url path
+            filename = pathlib.Path(urllib.parse.urlparse(response.url).path).name
+            if not filename:
+                filename = f"{id}-{timestamp}"
+
         await browser.close()
-        return pathlib.Path(local_file_path)
+        return filename, body
 
 @app.get("/")
-async def root(id: str = Query(..., description="ID to pass to leapcell template")):
+async def root(id: str = Query(..., description="ID to pass to service template")):
     if not id:
         raise HTTPException(status_code=400, detail="id parameter required")
 
@@ -182,26 +222,21 @@ async def root(id: str = Query(..., description="ID to pass to leapcell template
 
     # construct target url
     target_url = make_target_url(id)
-    local_path = None
+    filename = None
+    data_bytes = None
     try:
-        # run playwright download
-        local_path = await playwright_download(target_url, id)
+        # run playwright to get filename and bytes (no file writes)
+        filename, data_bytes = await playwright_download_stream(target_url, id)
     except HTTPException as he:
         raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"download failed: {e}")
 
-    # upload to mega via rclone
-    filename = local_path.name
+    # upload to mega via rclone rcat (stream)
     try:
         remote_folder = RCLONE_REMOTE_FOLDER.rstrip("/")
-        link = await rclone_upload_and_link(str(local_path), remote_folder, filename)
+        link = await rclone_rstream_upload_bytes(data_bytes, remote_folder, filename)
     except Exception as e:
-        # cleanup local file on failure
-        try:
-            local_path.unlink(missing_ok=True)
-        except Exception:
-            pass
         raise HTTPException(status_code=500, detail=f"rclone/upload failed: {e}")
 
     # store in redis
@@ -210,11 +245,5 @@ async def root(id: str = Query(..., description="ID to pass to leapcell template
     except Exception as e:
         # warn but continue
         print("warning: redis set failed", e)
-
-    # optional: cleanup local file after upload
-    try:
-        local_path.unlink(missing_ok=True)
-    except Exception:
-        pass
 
     return JSONResponse({"id": id, "downloadUrl": link, "cached": False})
