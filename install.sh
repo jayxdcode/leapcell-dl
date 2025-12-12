@@ -102,7 +102,7 @@ python3 -m venv venv
 
 python -m pip install --upgrade pip
 echo "Installing python deps (fastapi, uvicorn, playwright, redis, aiofiles)..."
-pip install "fastapi" "uvicorn[standard]" "redis" "aiofiles" "playwright"
+pip install "fastapi" "uvicorn[standard]" "redis" "aiofiles" "aiohttp" "playwright"
 
 # install playwright chromium browser (non-interactive)
 echo "Installing Playwright browsers (chromium)... This will download Chromium."
