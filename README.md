@@ -36,8 +36,10 @@ This README covers installation, configuration, workflow, and usage.
 * Exposes a simple API endpoint:
 
 ```
-GET /?id=<string>
+GET /api/v1/fetch?id=<string>
 ```
+
+> Root endpoint shows usage info
 
 * ID parameter determines which asset to fetch
 
