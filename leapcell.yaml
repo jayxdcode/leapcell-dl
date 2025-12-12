@@ -1,0 +1,5 @@
+runtime: python
+startCommand: sh run.sh
+buildCommand: sh install.sh
+port: 8080
+memory: 1024mb
