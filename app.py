@@ -20,7 +20,7 @@ app = FastAPI(title="LeapCell downloader + rclone->mega cache")
 # Config via env vars
 SERVICE_URL_TEMPLATE = os.getenv("SERVICE_URL_TEMPLATE", "https://leapcell.example/item/{id}")
 # keep DOWNLOADS_DIR for backwards-compat but not used for persistent writes
-DOWNLOADS_DIR = pathlib.Path(os.getenv("DOWNLOADS_DIR", "downloads"))
+# DOWNLOADS_DIR = pathlib.Path(os.getenv("DOWNLOADS_DIR", "downloads"))
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 REDIS_TTL = int(os.getenv("REDIS_TTL", str(60 * 60 * 24)))  # store cached link 24h by default
 BROWSER_EXECUTABLE_PATH = os.getenv("BROWSER_EXECUTABLE_PATH")  # optional path to chromium executable
