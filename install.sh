@@ -134,7 +134,7 @@ echo "  - Put your FastAPI app (app.py) in ${APP_DIR} (if not already)."
 echo "  - Edit environment variables as needed, then run ./run.sh"
 echo
 echo "Example run (one-liner):"
-echo "  export LEAPCELL_URL_TEMPLATE='https://leapcell.example/item/{id}'"
+echo "  export SERVICE_URL_TEMPLATE='https://leapcell.example/item/{id}'"
 echo "  export RCLONE_REMOTE='${RCLONE_REMOTE}'"
 echo "  export RCLONE_REMOTE_FOLDER='${RCLONE_REMOTE_FOLDER}'"
 echo "  export REDIS_URL='redis://localhost:6379/0'"

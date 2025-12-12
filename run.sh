@@ -4,23 +4,23 @@ set -euo pipefail
 # run.sh - run the FastAPI app inside the venv
 # Ensure you exported MEGA_USER and MEGA_PASS before install.sh; you don't need to export them at runtime
 # Required env for runtime:
-#   LEAPCELL_URL_TEMPLATE (eg "https://leapcell.example/item/{id}")
+#   SERVICE_URL_TEMPLATE (eg "https://leapcell.example/item/{id}")
 # Optional:
 #   RCLONE_REMOTE (default: mega)
 #   RCLONE_REMOTE_FOLDER (default: leapcell_cache)
 #   BROWSER_EXECUTABLE_PATH (if you want to point to a system chromium)
 #   REDIS_URL (default redis://localhost:6379/0)
 # Example:
-#   LEAPCELL_URL_TEMPLATE='https://example/item/{id}' ./run.sh
+#   SERVICE_URL_TEMPLATE='https://example/item/{id}' ./run.sh
 
-LEAPCELL_URL_TEMPLATE="${LEAPCELL_URL_TEMPLATE:-}"
+SERVICE_URL_TEMPLATE="${SERVICE_URL_TEMPLATE:-}"
 RCLONE_REMOTE="${RCLONE_REMOTE:-mega}"
 RCLONE_REMOTE_FOLDER="${RCLONE_REMOTE_FOLDER:-leapcell_cache}"
 REDIS_URL="${REDIS_URL:-redis://localhost:6379/0}"
 BROWSER_EXECUTABLE_PATH="${BROWSER_EXECUTABLE_PATH:-}"
 
-if [ -z "$LEAPCELL_URL_TEMPLATE" ]; then
-  echo "Error: LEAPCELL_URL_TEMPLATE must be set (eg export LEAPCELL_URL_TEMPLATE='https://site/item/{id}')"
+if [ -z "$SERVICE_URL_TEMPLATE" ]; then
+  echo "Error: SERVICE_URL_TEMPLATE must be set (eg export SERVICE_URL_TEMPLATE='https://site/item/{id}')"
   exit 2
 fi
 
@@ -33,7 +33,7 @@ fi
 # shellcheck disable=SC1091
 . venv/bin/activate
 
-export LEAPCELL_URL_TEMPLATE
+export SERVICE_URL_TEMPLATE
 export RCLONE_REMOTE
 export RCLONE_REMOTE_FOLDER
 export REDIS_URL

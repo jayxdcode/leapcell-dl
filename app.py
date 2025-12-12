@@ -16,7 +16,7 @@ import aiofiles
 app = FastAPI(title="LeapCell downloader + rclone->mega cache")
 
 # Config via env vars
-LEAPCELL_URL_TEMPLATE = os.getenv("LEAPCELL_URL_TEMPLATE", "https://leapcell.example/item/{id}")
+SERVICE_URL_TEMPLATE = os.getenv("SERVICE_URL_TEMPLATE", "https://leapcell.example/item/{id}")
 DOWNLOADS_DIR = pathlib.Path(os.getenv("DOWNLOADS_DIR", "downloads"))
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 REDIS_TTL = int(os.getenv("REDIS_TTL", str(60 * 60 * 24)))  # store cached link 24h by default
@@ -33,7 +33,7 @@ redis = aioredis.from_url(REDIS_URL, decode_responses=True)
 
 # Helper: build leapcell url
 def make_target_url(id: str) -> str:
-    return LEAPCELL_URL_TEMPLATE.format(id=id)
+    return SERVICE_URL_TEMPLATE.format(id=id)
 
 # Helper: shell out to rclone: copy local file to remote and then produce a public link
 async def rclone_upload_and_link(local_path: str, remote_folder: str, filename: str) -> str:
