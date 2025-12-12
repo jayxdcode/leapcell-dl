@@ -39,6 +39,6 @@ export RCLONE_REMOTE_FOLDER
 export REDIS_URL
 export BROWSER_EXECUTABLE_PATH
 
-# Run uvicorn (single worker) and bind to 0.0.0.0:8000
-echo "Starting FastAPI (uvicorn) on 0.0.0.0:8000 ..."
-uvicorn app:app --host 0.0.0.0 --port 8000 --workers 1
+# Run uvicorn (single worker) and bind to 0.0.0.0:8080
+echo "Starting FastAPI (uvicorn) on 0.0.0.0:8080 ..."
+uvicorn app:app --host 0.0.0.0 --port 8080 --workers 1
